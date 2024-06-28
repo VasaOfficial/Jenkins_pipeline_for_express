@@ -1,6 +1,0 @@
-- hosts: git-server
-  remote_user: vagrant
-  become: yes
-
-  roles: 
-      - git-server
