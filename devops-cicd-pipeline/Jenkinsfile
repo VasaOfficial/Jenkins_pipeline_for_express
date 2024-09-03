@@ -1,0 +1,101 @@
+pipeline {
+    agent any
+
+    environment {
+        SCANNER_HOME = tool 'sonar-scanner'
+        SONAR_URL = 'sonar url here'
+        SONAR_TOKEN = 'sonar token here'
+        AWS_CREDENTIALS = credentials('aws-credentials-id')
+        ECR_REPO = ''
+        AWS_REGION = 'eu-central-1'
+        APP_NAME = 'expressbasic'
+        CLUSTER_NAME = 'ecs cluster name'
+        SERVICE_NAME = 'ecs service name'
+    }
+
+    stages {
+        stage('Git Checkout') {
+            steps {
+                git branch: 'main', changelog: false, poll: false, url: 'github repo url of the project'
+            }
+        }
+
+        stage('Sonar Analysis') {
+            steps {
+                sh '''$SCANNER_HOME/bin/sonar-scanner \
+                       -Dsonar.host.url=$SONAR_URL \
+                       -Dsonar.login=$SONAR_TOKEN \
+                       -Dsonar.projectName='project name here' \
+                       -Dsonar.projectKey='project name here' \
+                       -Dsonar.sources=.'''
+            }
+        }
+
+        stage('OWASP Dependency Check') {
+            steps {
+               dependencyCheck additionalArguments: ' --scan ./', odcInstallation: 'DP'
+               dependencyCheckPublisher pattern: '**/dependency-check-report.xml'
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                script {
+                    sh "docker build -t $APP_NAME:latest ."
+                    sh "docker tag $APP_NAME:latest $ECR_REPO:latest"
+                }
+            }
+        }
+
+        stage('Push to ECR') {
+            steps {
+                script {
+                    withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-credentials-id']]) {
+                        sh """
+                            aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REPO
+                            docker push $ECR_REPO:latest
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Deploy to ECS') {
+            steps {
+                script {
+                    withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-credentials-id']]) {
+                        sh """
+                            aws ecs update-service \
+                            --cluster $CLUSTER_NAME \
+                            --service $SERVICE_NAME \
+                            --force-new-deployment \
+                            --region $AWS_REGION
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Cleanup') {
+            steps {
+                cleanWs()
+            }
+        }
+    }
+
+    post {
+        always {
+            echo 'Pipeline execution completed.'
+        }
+        success {
+            mail to: 'team@example.com',
+                 subject: "SUCCESS: ${env.JOB_NAME} ${env.BUILD_NUMBER}",
+                 body: "Good news! The build ${env.BUILD_NUMBER} succeeded."
+        }
+        failure {
+            mail to: 'team@example.com',
+                 subject: "FAILURE: ${env.JOB_NAME} ${env.BUILD_NUMBER}",
+                 body: "Unfortunately, the build ${env.BUILD_NUMBER} failed. Please check the Jenkins logs for details."
+        }
+    }
+}
